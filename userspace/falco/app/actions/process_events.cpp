@@ -310,7 +310,7 @@ static falco::app::run_result do_inspect(
 		auto res = s.engine->process_event(source_engine_idx, ev, s.config->m_rule_matching);
 		if(res != nullptr)
 		{
-			for(auto& rule_res : *res.get())
+			for(auto& rule_res : *res)
 			{
 				s.outputs->handle_event(rule_res.evt, rule_res.rule, rule_res.source, rule_res.priority_num, rule_res.format, rule_res.tags);
 			}
@@ -413,9 +413,9 @@ static falco::app::run_result init_stats_writer(
 		return falco::app::run_result::fatal("Metrics interval was passed as numeric value without Prometheus time unit. Please specify a time unit");
 	}
 
-	if (config->m_metrics_enabled && !sw->has_output())
+	if (config->m_metrics_enabled && !(sw->has_output() || config->m_webserver_config.m_prometheus_metrics_enabled))
 	{
-		return falco::app::run_result::fatal("Metrics are enabled with no output configured. Please enable at least one output channel");
+		return falco::app::run_result::fatal("Metrics are enabled with no output configured. Please enable at least one output channel ('metrics.output_rule', 'metrics.output_file' or 'webserver.prometheus_metrics_enabled')");
 	}
 
 	falco_logger::log(falco_logger::level::INFO, "Setting metrics interval to " + config->m_metrics_interval_str + ", equivalent to " + std::to_string(config->m_metrics_interval) + " (ms)\n");
@@ -436,7 +436,7 @@ falco::app::run_result falco::app::actions::process_events(falco::app::state& s)
 	s.engine->complete_rule_loading();
 
 	// Initialize stats writer
-	auto statsw = std::make_shared<stats_writer>(s.outputs, s.config);
+	auto statsw = std::make_shared<stats_writer>(s.outputs, s.config, s.engine);
 	auto res = init_stats_writer(statsw, s.config, s.options.dry_run);
 
 	if (s.options.dry_run)
@@ -490,7 +490,7 @@ falco::app::run_result falco::app::actions::process_events(falco::app::state& s)
 		{
 			auto& ctx = ctxs.emplace_back();
 			ctx.source = source;
-			ctx.sync.reset(new source_sync_context(termination_sem));
+			ctx.sync = std::make_unique<source_sync_context>(termination_sem);
 			auto src_info = s.source_infos.at(source);
 
 			try
@@ -516,9 +516,9 @@ falco::app::run_result falco::app::actions::process_events(falco::app::state& s)
 				{
 					auto res_ptr = &ctx.res;
 					auto sync_ptr = ctx.sync.get();
-					ctx.thread.reset(new std::thread([&s, src_info, &statsw, source, sync_ptr, res_ptr](){
+					ctx.thread = std::make_unique<std::thread>([&s, src_info, &statsw, source, sync_ptr, res_ptr]() {
 						process_inspector_events(s, src_info->inspector, statsw, source, sync_ptr, res_ptr);
-					}));
+					});
 				}
 			}
 			catch (std::exception &e)

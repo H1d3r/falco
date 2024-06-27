@@ -26,25 +26,6 @@ limitations under the License.
 namespace falco {
 namespace app {
 
-// Most bool member variables do not need to be set explicitly, as
-// they are bound to command line options that have default
-// values. However, a few options can be ifdef'd out so explicitly
-// initialize their linked variables.
-options::options()
-	: event_buffer_format(sinsp_evt::PF_NORMAL),
-	  list_fields(false),
-	  list_plugins(false),
-	  list_syscall_events(false),
-	  markdown(false),
-	  unbuffered_outputs(false),
-	  dry_run(false)
-{
-}
-
-options::~options()
-{
-}
-
 bool options::parse(int argc, char **argv, std::string &errstr)
 {
 	cxxopts::Options opts("falco", "Falco - Cloud Native Runtime Security");
@@ -117,6 +98,7 @@ bool options::parse(int argc, char **argv, std::string &errstr)
 	// Convert the vectors of enabled/disabled tags into sets to match falco engine API
 	if(m_cmdline_parsed.count("T") > 0)
 	{
+		falco_logger::log(falco_logger::level::WARNING, "The -T option is deprecated and will be removed in Falco 0.39.0. Use -o rules[].disable.tag=<tag> instead.");
 		for(auto &tag : m_cmdline_parsed["T"].as<std::vector<std::string>>())
 		{
 			disabled_rule_tags.insert(tag);
@@ -125,10 +107,16 @@ bool options::parse(int argc, char **argv, std::string &errstr)
 
 	if(m_cmdline_parsed.count("t") > 0)
 	{
+		falco_logger::log(falco_logger::level::WARNING, "The -t option is deprecated and will be removed in Falco 0.39.0. Use -o rules[].disable.rule=* -o rules[].enable.tag=<tag> instead.");
 		for(auto &tag : m_cmdline_parsed["t"].as<std::vector<std::string>>())
 		{
 			enabled_rule_tags.insert(tag);
 		}
+	}
+
+	if(disabled_rule_substrings.size() > 0)
+	{
+		falco_logger::log(falco_logger::level::WARNING, "The -D option is deprecated and will be removed in Falco 0.39.0. Use -o rules[].disable.rule=<wildcard-pattern> instead.");
 	}
 
 	// Some combinations of arguments are not allowed.
@@ -168,7 +156,7 @@ void options::define(cxxopts::Options& opts)
 #endif
 		("disable-source",                "Turn off a specific <event_source>. By default, all loaded sources get enabled. Available sources are 'syscall' plus all sources defined by loaded plugins supporting the event sourcing capability. This option can be passed multiple times, but turning off all event sources simultaneously is not permitted. This option can not be mixed with --enable-source. This option has no effect when reproducing events from a capture file.", cxxopts::value(disable_sources), "<event_source>")
 		("dry-run",                       "Run Falco without processing events. It can help check that the configuration and rules do not have any errors.", cxxopts::value(dry_run)->default_value("false"))
-		("D",                             "Turn off any rules with names having the substring <substring>. This option can be passed multiple times. It cannot be mixed with -t.", cxxopts::value(disabled_rule_substrings), "<substring>")
+		("D",                             "DEPRECATED: use -o rules[].disable.rule=<wildcard-pattern> instead. Turn off any rules with names having the substring <substring>. This option can be passed multiple times. It cannot be mixed with -t.", cxxopts::value(disabled_rule_substrings), "<substring>")
 		("enable-source",                 "Enable a specific <event_source>. By default, all loaded sources get enabled. Available sources are 'syscall' plus all sources defined by loaded plugins supporting the event sourcing capability. This option can be passed multiple times. When using this option, only the event sources specified by it will be enabled. This option can not be mixed with --disable-source. This option has no effect when reproducing events from a capture file.", cxxopts::value(enable_sources), "<event_source>")
 #ifdef HAS_GVISOR
 		("gvisor-generate-config",		  "Generate a configuration file that can be used for gVisor and exit. See --gvisor-config for more details.", cxxopts::value<std::string>(gvisor_generate_config_with_socket)->implicit_value("/run/falco/gvisor.sock"), "<socket_path>")
@@ -184,13 +172,13 @@ void options::define(cxxopts::Options& opts)
 		("N",                             "Only print field names when used in conjunction with the --list option. It has no effect when used with other options.", cxxopts::value(names_only)->default_value("false"))
 		("o,option",                      "Set the value of option <opt> to <val>. Overrides values in the configuration file. <opt> can be identified using its location in the configuration file using dot notation. Elements of list entries can be accessed via square brackets [].\n    E.g. base.id = val\n         base.subvalue.subvalue2 = val\n         base.list[1]=val", cxxopts::value(cmdline_config_options), "<opt>=<val>")
 		("plugin-info",                   "Print info for the plugin specified by <plugin_name> and exit.\nThis includes all descriptive information like name and author, along with the\nschema format for the init configuration and a list of suggested open parameters.\n<plugin_name> can be the plugin's name or its configured 'library_path'.", cxxopts::value(print_plugin_info), "<plugin_name>")
-		("p,print",                       "Print (or replace) additional information in the rule's output.\nUse -pc or -pcontainer to append container details.\nUse -pk or -pkubernetes to add both container and Kubernetes details.\nIf using gVisor, choose -pcg or -pkg variants (or -pcontainer-gvisor and -pkubernetes-gvisor, respectively).\nIf a rule's output contains %container.info, it will be replaced with the corresponding details. Otherwise, these details will be directly appended to the rule's output.\nAlternatively, use -p <output_format> for a custom format. In this case, the given <output_format> will be appended to the rule's output without any replacement.", cxxopts::value(print_additional), "<output_format>")
+		("p,print",                       "Print (or replace) additional information in the rule's output.\nUse -pc or -pcontainer to append container details to syscall events.\nUse -pk or -pkubernetes to add both container and Kubernetes details to syscall events.\nIf using gVisor, choose -pcg or -pkg variants (or -pcontainer-gvisor and -pkubernetes-gvisor, respectively).\nIf a syscall rule's output contains %container.info, it will be replaced with the corresponding details. Otherwise, these details will be directly appended to the rule's output.\nAlternatively, use -p <output_format> for a custom format. In this case, the given <output_format> will be appended to the rule's output without any replacement to all events, including plugin events.", cxxopts::value(print_additional), "<output_format>")
 		("P,pidfile",                     "Write PID to specified <pid_file> path. By default, no PID file is created.", cxxopts::value(pidfilename)->default_value(""), "<pid_file>")
 		("r",                             "Rules file or directory to be loaded. This option can be passed multiple times. Falco defaults to the values in the configuration file when this option is not specified.", cxxopts::value<std::vector<std::string>>(), "<rules_file>")
 		("S,snaplen",                     "Collect only the first <len> bytes of each I/O buffer for 'syscall' events. By default, the first 80 bytes are collected by the driver and sent to the user space for processing. Use this option with caution since it can have a strong performance impact.", cxxopts::value(snaplen)->default_value("0"), "<len>")
 		("support",                       "Print support information, including version, rules files used, loaded configuration, etc., and exit. The output is in JSON format.", cxxopts::value(print_support)->default_value("false"))
-		("T",                             "Turn off any rules with a tag=<tag>. This option can be passed multiple times. This option can not be mixed with -t.", cxxopts::value<std::vector<std::string>>(), "<tag>")
-		("t",                             "Only enable those rules with a tag=<tag>. This option can be passed multiple times. This option can not be mixed with -T/-D.", cxxopts::value<std::vector<std::string>>(), "<tag>")
+		("T",                             "DEPRECATED: use -o rules[].disable.tag=<tag> instead. Turn off any rules with a tag=<tag>. This option can be passed multiple times. This option can not be mixed with -t.", cxxopts::value<std::vector<std::string>>(), "<tag>")
+		("t",                             "DEPRECATED: use -o rules[].disable.rule=* -o rules[].enable.tag=<tag> instead. Only enable those rules with a tag=<tag>. This option can be passed multiple times. This option can not be mixed with -T/-D.", cxxopts::value<std::vector<std::string>>(), "<tag>")
 		("U,unbuffered",                  "Turn off output buffering for configured outputs. This causes every single line emitted by Falco to be flushed, which generates higher CPU usage but is useful when piping those outputs into another process or a script.", cxxopts::value(unbuffered_outputs)->default_value("false"))
 		("V,validate",                    "Read the contents of the specified <rules_file> file(s), validate the loaded rules, and exit. This option can be passed multiple times to validate multiple files.", cxxopts::value(validate_rules_filenames), "<rules_file>")
 		("v",                             "Enable verbose output.", cxxopts::value(verbose)->default_value("false"))

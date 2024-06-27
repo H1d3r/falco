@@ -60,11 +60,6 @@ falco_configuration::falco_configuration():
 	m_grpc_enabled(false),
 	m_grpc_threadiness(0),
 	m_webserver_enabled(false),
-	m_webserver_threadiness(0),
-	m_webserver_listen_port(8765),
-	m_webserver_listen_address("0.0.0.0"),
-	m_webserver_k8s_healthz_endpoint("/healthz"),
-	m_webserver_ssl_enabled(false),
 	m_syscall_evt_drop_threshold(.1),
 	m_syscall_evt_drop_rate(.03333),
 	m_syscall_evt_drop_max_burst(1),
@@ -77,20 +72,20 @@ falco_configuration::falco_configuration():
 	m_metrics_interval(5000),
 	m_metrics_stats_rule_enabled(false),
 	m_metrics_output_file(""),
-	m_metrics_flags((METRICS_V2_KERNEL_COUNTERS | METRICS_V2_LIBBPF_STATS | METRICS_V2_RESOURCE_UTILIZATION | METRICS_V2_STATE_COUNTERS)),
+	m_metrics_flags(0),
 	m_metrics_convert_memory_to_mb(true),
 	m_metrics_include_empty_values(false)
 {
 }
 
-void falco_configuration::init(const std::vector<std::string>& cmdline_options)
+void falco_configuration::init_from_content(const std::string& config_content, const std::vector<std::string>& cmdline_options, const std::string& filename)
 {
-	config.load_from_string("");
+	config.load_from_string(config_content);
 	init_cmdline_options(cmdline_options);
-	load_yaml("default");
+	load_yaml(filename);
 }
 
-void falco_configuration::init(const std::string& conf_filename, std::vector<std::string>& loaded_conf_files,
+void falco_configuration::init_from_file(const std::string& conf_filename, std::vector<std::string>& loaded_conf_files,
 			       const std::vector<std::string> &cmdline_options)
 {
 	loaded_conf_files.clear();
@@ -104,7 +99,7 @@ void falco_configuration::init(const std::string& conf_filename, std::vector<std
 		throw e;
 	}
 	init_cmdline_options(cmdline_options);
-	merge_configs_files(conf_filename, loaded_conf_files);
+	merge_config_files(conf_filename, loaded_conf_files);
 	load_yaml(conf_filename);
 }
 
@@ -113,7 +108,7 @@ std::string falco_configuration::dump()
 	return config.dump();
 }
 
-void falco_configuration::merge_configs_files(const std::string& config_name, std::vector<std::string>& loaded_config_files)
+void falco_configuration::merge_config_files(const std::string& config_name, std::vector<std::string>& loaded_config_files)
 {
 	// Load configs files to be included and merge them into current config
 	// NOTE: loaded_config_files will resolve to the filepaths list of loaded config.
@@ -165,6 +160,13 @@ void falco_configuration::merge_configs_files(const std::string& config_name, st
 			}
 		}
 	}
+
+#if defined(__linux__) and !defined(MINIMAL_BUILD) and !defined(__EMSCRIPTEN__)
+	for(auto &filename : m_loaded_configs_filenames)
+	{
+		m_loaded_configs_filenames_sha256sum.insert({filename, falco::utils::calculate_file_sha256sum(filename)});
+	}
+#endif
 }
 
 void falco_configuration::init_logger()
@@ -275,6 +277,7 @@ void falco_configuration::load_yaml(const std::string& config_name)
 
 	m_rules_filenames.clear();
 	m_loaded_rules_filenames.clear();
+	m_loaded_rules_filenames_sha256sum.clear();
 	m_loaded_rules_folders.clear();
 	for(auto &file : rules_files)
 	{
@@ -446,21 +449,22 @@ void falco_configuration::load_yaml(const std::string& config_name)
 	m_time_format_iso_8601 = config.get_scalar<bool>("time_format_iso_8601", false);
 
 	m_webserver_enabled = config.get_scalar<bool>("webserver.enabled", false);
-	m_webserver_threadiness = config.get_scalar<uint32_t>("webserver.threadiness", 0);
-	m_webserver_listen_port = config.get_scalar<uint32_t>("webserver.listen_port", 8765);
-	m_webserver_listen_address = config.get_scalar<std::string>("webserver.listen_address", "0.0.0.0");
-	if(!re2::RE2::FullMatch(m_webserver_listen_address, ip_address_re))
+	m_webserver_config.m_threadiness = config.get_scalar<uint32_t>("webserver.threadiness", 0);
+	m_webserver_config.m_listen_port = config.get_scalar<uint32_t>("webserver.listen_port", 8765);
+	m_webserver_config.m_listen_address = config.get_scalar<std::string>("webserver.listen_address", "0.0.0.0");
+	if(!re2::RE2::FullMatch(m_webserver_config.m_listen_address, ip_address_re))
 	{
-		throw std::logic_error("Error reading config file (" + config_name + "): webserver listen address \"" + m_webserver_listen_address + "\" is not a valid IP address");
+		throw std::logic_error("Error reading config file (" + config_name + "): webserver listen address \"" + m_webserver_config.m_listen_address + "\" is not a valid IP address");
 	}
 
-	m_webserver_k8s_healthz_endpoint = config.get_scalar<std::string>("webserver.k8s_healthz_endpoint", "/healthz");
-	m_webserver_ssl_enabled = config.get_scalar<bool>("webserver.ssl_enabled", false);
-	m_webserver_ssl_certificate = config.get_scalar<std::string>("webserver.ssl_certificate", "/etc/falco/falco.pem");
-	if(m_webserver_threadiness == 0)
+	m_webserver_config.m_k8s_healthz_endpoint = config.get_scalar<std::string>("webserver.k8s_healthz_endpoint", "/healthz");
+	m_webserver_config.m_ssl_enabled = config.get_scalar<bool>("webserver.ssl_enabled", false);
+	m_webserver_config.m_ssl_certificate = config.get_scalar<std::string>("webserver.ssl_certificate", "/etc/falco/falco.pem");
+	if(m_webserver_config.m_threadiness == 0)
 	{
-		m_webserver_threadiness = falco::utils::hardware_concurrency();
+		m_webserver_config.m_threadiness = falco::utils::hardware_concurrency();
 	}
+	m_webserver_config.m_prometheus_metrics_enabled = config.get_scalar<bool>("webserver.prometheus_metrics_enabled", false);
 
 	std::list<std::string> syscall_event_drop_acts;
 	config.get_sequence(syscall_event_drop_acts, "syscall_event_drops.actions");
@@ -531,28 +535,35 @@ void falco_configuration::load_yaml(const std::string& config_name)
 	m_metrics_output_file = config.get_scalar<std::string>("metrics.output_file", "");
 
 	m_metrics_flags = 0;
+	if (config.get_scalar<bool>("metrics.rules_counters_enabled", true))
+	{
+		m_metrics_flags |= METRICS_V2_RULE_COUNTERS;
+	}
 	if (config.get_scalar<bool>("metrics.resource_utilization_enabled", true))
 	{
 		m_metrics_flags |= METRICS_V2_RESOURCE_UTILIZATION;
-
 	}
 	if (config.get_scalar<bool>("metrics.state_counters_enabled", true))
 	{
 		m_metrics_flags |= METRICS_V2_STATE_COUNTERS;
-
 	}
 	if (config.get_scalar<bool>("metrics.kernel_event_counters_enabled", true))
 	{
 		m_metrics_flags |= METRICS_V2_KERNEL_COUNTERS;
-
 	}
 	if (config.get_scalar<bool>("metrics.libbpf_stats_enabled", true))
 	{
 		m_metrics_flags |= METRICS_V2_LIBBPF_STATS;
 	}
+	if (config.get_scalar<bool>("metrics.plugins_metrics_enabled", true))
+	{
+		m_metrics_flags |= METRICS_V2_PLUGINS;
+	}
 
 	m_metrics_convert_memory_to_mb = config.get_scalar<bool>("metrics.convert_memory_to_mb", true);
 	m_metrics_include_empty_values = config.get_scalar<bool>("metrics.include_empty_values", false);
+
+	config.get_sequence<std::vector<rule_selection_config>>(m_rules_selection, "rules");
 
 	std::vector<std::string> load_plugins;
 

@@ -22,7 +22,9 @@ limitations under the License.
 #include <libsinsp/utils.h>
 
 #include <re2/re2.h>
-
+#if defined(__linux__) and !defined(MINIMAL_BUILD) and !defined(__EMSCRIPTEN__)
+#include <openssl/sha.h>
+#endif
 #include <cstring>
 #include <fstream>
 #include <iomanip>
@@ -117,6 +119,50 @@ uint64_t parse_prometheus_interval(std::string interval_str)
 	return interval;
 }
 
+#if defined(__linux__) and !defined(MINIMAL_BUILD) and !defined(__EMSCRIPTEN__)
+std::string calculate_file_sha256sum(const std::string& filename)
+{
+	std::ifstream file(filename, std::ios::binary);
+	if (!file.is_open())
+	{
+		return "";
+	}
+
+	SHA256_CTX sha256_context;
+	SHA256_Init(&sha256_context);
+
+	constexpr size_t buffer_size = 4096;
+	char buffer[buffer_size];
+	while (file.read(buffer, buffer_size))
+	{
+		SHA256_Update(&sha256_context, buffer, buffer_size);
+	}
+	SHA256_Update(&sha256_context, buffer, file.gcount());
+
+	unsigned char digest[SHA256_DIGEST_LENGTH];
+	SHA256_Final(digest, &sha256_context);
+
+	std::stringstream ss;
+	for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i)
+	{
+		ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<unsigned>(digest[i]);
+	}
+	return ss.str();
+}
+#endif
+
+std::string sanitize_metric_name(const std::string& name)
+{
+	std::string sanitized_name = name;
+	RE2::GlobalReplace(&sanitized_name, "[^a-zA-Z0-9_:]", "_");
+	RE2::GlobalReplace(&sanitized_name, "_+", "_");
+	if (!sanitized_name.empty() && sanitized_name.back() == '_')
+	{
+		sanitized_name.pop_back();
+	}
+	return sanitized_name;
+}
+
 std::string wrap_text(const std::string& in, uint32_t indent, uint32_t line_len)
 {
 	std::istringstream is(in);
@@ -161,6 +207,48 @@ void readfile(const std::string& filename, std::string& data)
 	}
 
 	return;
+}
+
+bool matches_wildcard(const std::string &pattern, const std::string &s)
+{
+	std::string::size_type star_pos = pattern.find("*");
+	if(star_pos == std::string::npos)
+	{
+		// regular match (no wildcards)
+		return pattern == s;
+	}
+
+	if(star_pos == 0)
+	{
+		// wildcard at the beginning "*something*..."
+
+		std::string::size_type next_pattern_start = pattern.find_first_not_of("*");
+		if(next_pattern_start == std::string::npos)
+		{
+			// pattern was just a sequence of stars *, **, ***, ... . This always matches.
+			return true;
+		}
+
+		std::string next_pattern = pattern.substr(next_pattern_start);
+		std::string to_find = next_pattern.substr(0, next_pattern.find("*"));
+		std::string::size_type lit_pos = s.find(to_find);
+		if(lit_pos == std::string::npos)
+		{
+			return false;
+		}
+
+		return matches_wildcard(next_pattern.substr(to_find.size()), s.substr(lit_pos + to_find.size()));
+	} else
+	{
+		// wildcard at the end or in the middle "something*else*..."
+		
+		if(pattern.substr(0, star_pos) != s.substr(0, star_pos))
+		{
+			return false;
+		}
+
+		return matches_wildcard(pattern.substr(star_pos), s.substr(star_pos));
+	}
 }
 
 namespace network

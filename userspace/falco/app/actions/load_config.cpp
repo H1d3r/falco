@@ -30,20 +30,20 @@ static falco::app::run_result apply_deprecated_options(const falco::app::state& 
 falco::app::run_result falco::app::actions::load_config(const falco::app::state& s)
 {
 	// List of loaded conf files, ie: s.options.conf_filename
-	// plus all the `configs_files` expanded list of configs.
+	// plus all the `config_files` expanded list of configs.
 	std::vector<std::string> loaded_conf_files;
 	try
 	{
 		if (!s.options.conf_filename.empty())
 		{
-			s.config->init(s.options.conf_filename, loaded_conf_files, s.options.cmdline_config_options);
+			s.config->init_from_file(s.options.conf_filename, loaded_conf_files, s.options.cmdline_config_options);
 		}
 		else
 		{
 			// Is possible to have an empty config file when we want to use some command line
 			// options like `--help`, `--version`, ...
 			// The configs used in `load_yaml` will be initialized to the default values.
-			s.config->init(s.options.cmdline_config_options);
+			s.config->init_from_content("", s.options.cmdline_config_options);
 		}
 	}
 	catch (std::exception& e)

@@ -28,8 +28,11 @@ limitations under the License.
 #include "stats_writer.h"
 #include "logger.h"
 #include "config_falco.h"
+#include "falco_utils.h"
 #include <libscap/strl.h>
 #include <libscap/scap_vtable.h>
+
+namespace fs = std::filesystem;
 
 // note: ticker_t is an uint16_t, which is enough because we don't care about
 // overflows here. Threads calling stats_writer::handle() will just
@@ -168,8 +171,9 @@ stats_writer::ticker_t stats_writer::get_ticker()
 
 stats_writer::stats_writer(
 		const std::shared_ptr<falco_outputs>& outputs,
-		const std::shared_ptr<const falco_configuration>& config)
-	: m_config(config)
+		const std::shared_ptr<const falco_configuration>& config,
+		const std::shared_ptr<const falco_engine>& engine)
+	: m_config(config), m_engine(engine)
 {
 	if (config->m_metrics_enabled)
 	{
@@ -317,17 +321,43 @@ void stats_writer::collector::get_metrics_output_fields_wrapper(
 	const scap_agent_info* agent_info = inspector->get_agent_info();
 	const scap_machine_info* machine_info = inspector->get_machine_info();
 
+	// Falco wrapper metrics
+	//
+
 	/* Wrapper fields useful for statistical analyses and attributions. Always enabled. */
 	output_fields["evt.time"] = now; /* Some ETLs may prefer a consistent timestamp within output_fields. */
 	output_fields["falco.version"] = FALCO_VERSION;
-	output_fields["falco.start_ts"] = agent_info->start_ts_epoch;
-	output_fields["falco.duration_sec"] = (uint64_t)((now - agent_info->start_ts_epoch) / ONE_SECOND_IN_NS);
-	output_fields["falco.kernel_release"] = agent_info->uname_r;
-	output_fields["evt.hostname"] = machine_info->hostname; /* Explicitly add hostname to log msg in case hostname rule output field is disabled. */
-	output_fields["falco.host_boot_ts"] = machine_info->boot_ts_epoch;
-	output_fields["falco.host_num_cpus"] = machine_info->num_cpus;
+	if (agent_info)
+	{
+		output_fields["falco.start_ts"] = agent_info->start_ts_epoch;
+		output_fields["falco.duration_sec"] = (uint64_t)((now - agent_info->start_ts_epoch) / ONE_SECOND_IN_NS);
+		output_fields["falco.kernel_release"] = agent_info->uname_r;
+	}
+	if (machine_info)
+	{
+		output_fields["evt.hostname"] = machine_info->hostname; /* Explicitly add hostname to log msg in case hostname rule output field is disabled. */
+		output_fields["falco.host_boot_ts"] = machine_info->boot_ts_epoch;
+		output_fields["falco.host_num_cpus"] = machine_info->num_cpus;
+	}
 	output_fields["falco.outputs_queue_num_drops"] = m_writer->m_outputs->get_outputs_queue_num_drops();
 
+#if defined(__linux__) and !defined(MINIMAL_BUILD) and !defined(__EMSCRIPTEN__)
+	for (const auto& item : m_writer->m_config->m_loaded_rules_filenames_sha256sum)
+	{
+		fs::path fs_path = item.first;
+		std::string metric_name_file_sha256 = fs_path.filename().stem();
+		metric_name_file_sha256 = "falco.sha256_rules_file." + falco::utils::sanitize_metric_name(metric_name_file_sha256);
+		output_fields[metric_name_file_sha256] = item.second;
+	}
+
+	for (const auto& item : m_writer->m_config->m_loaded_configs_filenames_sha256sum)
+	{
+		fs::path fs_path = item.first;
+		std::string metric_name_file_sha256 = fs_path.filename().stem();
+		metric_name_file_sha256 = "falco.sha256_config_file." + falco::utils::sanitize_metric_name(metric_name_file_sha256);
+		output_fields[metric_name_file_sha256] = item.second;
+	}
+#endif
 	output_fields["evt.source"] = src;
 	for (size_t i = 0; i < sizeof(all_driver_engines) / sizeof(const char*); i++)
 	{
@@ -353,9 +383,38 @@ void stats_writer::collector::get_metrics_output_fields_additional(
 		nlohmann::json& output_fields,
 		double stats_snapshot_time_delta_sec)
 {
+	// Falco metrics categories
+	//
+	// rules_counters_enabled
+	if(m_writer->m_config->m_metrics_flags & METRICS_V2_RULE_COUNTERS)
+	{
+		const stats_manager& rule_stats_manager = m_writer->m_engine->get_rule_stats_manager();
+		const indexed_vector<falco_rule>& rules = m_writer->m_engine->get_rules();
+		output_fields["falco.rules.matches_total"] = rule_stats_manager.get_total().load();
+		const std::vector<std::unique_ptr<std::atomic<uint64_t>>>& rules_by_id = rule_stats_manager.get_by_rule_id();
+		for (size_t i = 0; i < rules_by_id.size(); i++)
+		{
+			auto rule_count = rules_by_id[i]->load();
+			if (rule_count == 0 && !m_writer->m_config->m_metrics_include_empty_values)
+			{
+				continue;
+			}
+			auto rule = rules.at(i);
+			std::string rules_metric_name = "falco.rules." + falco::utils::sanitize_metric_name(rule->name);
+			output_fields[rules_metric_name] = rule_count;
+		}
+	}
+
 #if defined(__linux__) and !defined(MINIMAL_BUILD) and !defined(__EMSCRIPTEN__)
 	if (m_writer->m_libs_metrics_collector && m_writer->m_output_rule_metrics_converter)
 	{
+		// Libs metrics categories
+		//
+		// resource_utilization_enabled
+		// state_counters_enabled
+		// kernel_event_counters_enabled
+		// libbpf_stats_enabled
+
 		// Refresh / New snapshot
 		m_writer->m_libs_metrics_collector->snapshot();
 		auto metrics_snapshot = m_writer->m_libs_metrics_collector->get_metrics();
@@ -381,6 +440,10 @@ void stats_writer::collector::get_metrics_output_fields_additional(
 			{
 				strlcpy(metric_name, "scap.", sizeof(metric_name));
 			}
+			if(metric.flags & METRICS_V2_PLUGINS)
+			{
+				strlcpy(metric_name, "plugins.", sizeof(metric_name));
+			}
 			strlcat(metric_name, metric.name, sizeof(metric_name));
 
 			switch (metric.type)
@@ -391,6 +454,13 @@ void stats_writer::collector::get_metrics_output_fields_additional(
 					break;
 				}
 				output_fields[metric_name] = metric.value.u32;
+				break;
+			case METRIC_VALUE_TYPE_S32:
+				if (metric.value.s32 == 0 && !m_writer->m_config->m_metrics_include_empty_values)
+				{
+					break;
+				}
+				output_fields[metric_name] = metric.value.s32;
 				break;
 			case METRIC_VALUE_TYPE_U64:
 				if (strncmp(metric.name, "n_evts", 7) == 0)
@@ -433,12 +503,33 @@ void stats_writer::collector::get_metrics_output_fields_additional(
 				}
 				output_fields[metric_name] = metric.value.u64;
 				break;
+			case METRIC_VALUE_TYPE_S64:
+				if (metric.value.s64 == 0 && !m_writer->m_config->m_metrics_include_empty_values)
+				{
+					break;
+				}
+				output_fields[metric_name] = metric.value.s64;
+				break;
 			case METRIC_VALUE_TYPE_D:
 				if (metric.value.d == 0 && !m_writer->m_config->m_metrics_include_empty_values)
 				{
 					break;
 				}
 				output_fields[metric_name] = metric.value.d;
+				break;
+			case METRIC_VALUE_TYPE_F:
+				if (metric.value.f == 0 && !m_writer->m_config->m_metrics_include_empty_values)
+				{
+					break;
+				}
+				output_fields[metric_name] = metric.value.f;
+				break;
+			case METRIC_VALUE_TYPE_I:
+				if (metric.value.i == 0 && !m_writer->m_config->m_metrics_include_empty_values)
+				{
+					break;
+				}
+				output_fields[metric_name] = metric.value.i;
 				break;
 			default:
 				break;

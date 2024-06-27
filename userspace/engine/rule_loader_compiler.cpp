@@ -447,18 +447,26 @@ bool rule_loader::compiler::compile_condition(
 		// skip the rule silently if skip_if_unknown_filter is true and
 		// we encountered some specific kind of errors
 		std::string err = e.what();
+		rule_loader::context ctx(compiler.get_pos(), condition, cond_ctx);
 		if(err_is_unknown_type_or_field(err) && allow_unknown_fields)
 		{
 			cfg.res->add_warning(
 				falco::load_result::load_result::LOAD_UNKNOWN_FILTER,
 				err,
-				cond_ctx);
+				ctx);
 			return false;
 		}
-		rule_loader::context ctx(compiler.get_pos(), condition, cond_ctx);
 		throw rule_loader::rule_load_exception(
 			falco::load_result::load_result::LOAD_ERR_COMPILE_CONDITION,
 			err,
+			ctx);
+	}
+	for (const auto &w : compiler.get_warnings())
+	{
+		rule_loader::context ctx(w.pos, condition, cond_ctx);
+		cfg.res->add_warning(
+			falco::load_result::load_result::LOAD_COMPILE_CONDITION,
+			w.msg,
 			ctx);
 	}
 
@@ -501,7 +509,15 @@ void rule_loader::compiler::compile_rule_infos(
 
 		// build rule output message
 		rule.output = r.output;
-		apply_output_substitutions(cfg, rule.output);
+
+		// plugins sources do not have any container info and so we won't apply -pk, -pc, etc.
+		// on the other hand, when using plugins you might want to append custom output based on the plugin
+		// TODO: this is not flexible enough (esp. if you mix plugin with syscalls),
+		// it would be better to add configuration options to control the output.
+		if (!cfg.replace_output_container_info || r.source == falco_common::syscall_source)
+		{
+			apply_output_substitutions(cfg, rule.output);
+		}
 
 		// validate the rule's output
 		if(!is_format_valid(*cfg.sources.at(r.source), rule.output, err))

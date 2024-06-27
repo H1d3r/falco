@@ -680,6 +680,42 @@ TEST_F(test_falco_engine, rule_override_with_enabled)
 	EXPECT_EQ(num_rules_for_ruleset(), 1);
 }
 
+TEST_F(test_falco_engine, rule_override_exceptions_required_fields)
+{
+    std::string rules_content = R"END(
+- rule: test_rule
+  desc: test rule description
+  condition: evt.type = close
+  output: user=%user.name command=%proc.cmdline file=%fd.name
+  priority: INFO
+  exceptions:
+    - name: test_exception
+      fields: proc.name
+      comps: in
+      values: ["cat"]
+
+# when appending, it's fine to provide partial exception definitions
+- rule: test_rule
+  exceptions:
+    - name: test_exception
+      values: [echo]
+  override:
+    exceptions: append
+
+# when replacing, we don't allow partial exception definitions
+- rule: test_rule
+  exceptions:
+    - name: test_exception
+      values: [id]
+  override:
+    exceptions: replace
+)END";
+
+	ASSERT_FALSE(load_rules(rules_content, "rules.yaml"));
+	ASSERT_FALSE(has_warnings());
+	ASSERT_TRUE(check_error_message("Item has no mapping for key 'fields'")) << m_load_result_json.dump();
+}
+
 TEST_F(test_falco_engine, rule_not_enabled)
 {
     std::string rules_content = R"END(
@@ -975,4 +1011,170 @@ TEST_F(test_falco_engine, exceptions_names_not_unique)
 
   ASSERT_TRUE(load_rules(rules_content, "rules.yaml"));
   ASSERT_TRUE(check_warning_message("Multiple definitions of exception"));
+}
+
+static std::string s_exception_values_rule_base = R"END(
+- rule: test_rule
+  desc: test rule
+  condition: evt.type = open
+  output: command=%proc.cmdline
+  priority: INFO
+)END";
+
+TEST_F(test_falco_engine, exceptions_values_rhs_field_ambiguous)
+{
+  auto rules_content = s_exception_values_rule_base + R"END(
+  exceptions:
+    - name: test_exception
+      fields: [proc.name]
+      comps: [=]
+      values:
+        - [proc.pname]
+)END";
+
+  ASSERT_TRUE(load_rules(rules_content, "rules.yaml"));
+  EXPECT_EQ(get_compiled_rule_condition("test_rule"), "(evt.type = open and not proc.name = proc.pname)");
+  EXPECT_TRUE(check_warning_message("string 'proc.pname' may be a valid field wrongly interpreted as a string value"));
+}
+
+TEST_F(test_falco_engine, exceptions_values_rhs_field_ambiguous_quoted)
+{
+  auto rules_content = s_exception_values_rule_base + R"END(
+  exceptions:
+    - name: test_exception
+      fields: [proc.name]
+      comps: [=]
+      values:
+        - ["proc.pname"]
+)END";
+
+  ASSERT_TRUE(load_rules(rules_content, "rules.yaml"));
+  EXPECT_EQ(get_compiled_rule_condition("test_rule"), "(evt.type = open and not proc.name = proc.pname)");
+  EXPECT_TRUE(check_warning_message("string 'proc.pname' may be a valid field wrongly interpreted as a string value"));
+}
+
+TEST_F(test_falco_engine, exceptions_values_rhs_field_ambiguous_space_quoted)
+{
+  auto rules_content = s_exception_values_rule_base + R"END(
+  exceptions:
+    - name: test_exception
+      fields: [proc.name]
+      comps: [=]
+      values:
+        - ["proc.pname "]
+)END";
+
+  ASSERT_TRUE(load_rules(rules_content, "rules.yaml"));
+  EXPECT_EQ(get_compiled_rule_condition("test_rule"), "(evt.type = open and not proc.name = \"proc.pname \")");
+  EXPECT_TRUE(check_warning_message("string 'proc.pname ' may be a valid field wrongly interpreted as a string value"));
+}
+
+TEST_F(test_falco_engine, exceptions_values_rhs_transformer)
+{
+  auto rules_content = s_exception_values_rule_base + R"END(
+  exceptions:
+    - name: test_exception
+      fields: [proc.name]
+      comps: [=]
+      values:
+        - [toupper(proc.pname)]
+)END";
+
+  ASSERT_TRUE(load_rules(rules_content, "rules.yaml"));
+  EXPECT_EQ(get_compiled_rule_condition("test_rule"), "(evt.type = open and not proc.name = toupper(proc.pname))");	
+}
+
+TEST_F(test_falco_engine, exceptions_values_transformer_value_quoted)
+{
+  auto rules_content = s_exception_values_rule_base + R"END(
+  exceptions:
+    - name: test_exception
+      fields: [proc.name]
+      comps: [=]
+      values:
+        - ["toupper(proc.pname)"]
+)END";
+
+  ASSERT_TRUE(load_rules(rules_content, "rules.yaml"));
+  EXPECT_EQ(get_compiled_rule_condition("test_rule"), "(evt.type = open and not proc.name = toupper(proc.pname))");	
+}
+
+TEST_F(test_falco_engine, exceptions_values_transformer_space)
+{
+  auto rules_content = s_exception_values_rule_base + R"END(
+  exceptions:
+    - name: test_exception
+      fields: [proc.name]
+      comps: [=]
+      values:
+        - [toupper( proc.pname)]
+)END";
+
+  ASSERT_TRUE(load_rules(rules_content, "rules.yaml"));
+  EXPECT_EQ(get_compiled_rule_condition("test_rule"), "(evt.type = open and not proc.name = \"toupper( proc.pname)\")");
+  EXPECT_TRUE(check_warning_message("string 'toupper( proc.pname)' may be a valid field transformer wrongly interpreted as a string value"));
+}
+
+TEST_F(test_falco_engine, exceptions_values_transformer_space_quoted)
+{
+  auto rules_content = s_exception_values_rule_base + R"END(
+  exceptions:
+    - name: test_exception
+      fields: [proc.name]
+      comps: [=]
+      values:
+        - ["toupper( proc.pname)"]
+)END";
+
+  ASSERT_TRUE(load_rules(rules_content, "rules.yaml"));
+  EXPECT_EQ(get_compiled_rule_condition("test_rule"), "(evt.type = open and not proc.name = \"toupper( proc.pname)\")");
+  EXPECT_TRUE(check_warning_message("string 'toupper( proc.pname)' may be a valid field transformer wrongly interpreted as a string value"));
+}
+
+TEST_F(test_falco_engine, exceptions_fields_transformer)
+{
+  auto rules_content = s_exception_values_rule_base + R"END(
+  exceptions:
+    - name: test_exception
+      fields: [tolower(proc.name)]
+      comps: [=]
+      values:
+        - [test]
+)END";
+
+  ASSERT_TRUE(load_rules(rules_content, "rules.yaml"));
+  EXPECT_FALSE(has_warnings());
+  EXPECT_EQ(get_compiled_rule_condition("test_rule"), "(evt.type = open and not tolower(proc.name) = test)");
+}
+
+TEST_F(test_falco_engine, exceptions_fields_transformer_quoted)
+{
+  auto rules_content = s_exception_values_rule_base + R"END(
+  exceptions:
+    - name: test_exception
+      fields: ["tolower(proc.name)"]
+      comps: [=]
+      values:
+        - [test]
+)END";
+
+  ASSERT_TRUE(load_rules(rules_content, "rules.yaml"));
+  ASSERT_FALSE(has_warnings());
+  EXPECT_EQ(get_compiled_rule_condition("test_rule"), "(evt.type = open and not tolower(proc.name) = test)");
+}
+
+TEST_F(test_falco_engine, exceptions_fields_transformer_space_quoted)
+{
+  auto rules_content = s_exception_values_rule_base + R"END(
+  exceptions:
+    - name: test_exception
+      fields: ["tolower( proc.name)"]
+      comps: [=]
+      values:
+        - [test]
+)END";
+
+  ASSERT_TRUE(load_rules(rules_content, "rules.yaml"));
+  ASSERT_FALSE(has_warnings());
+  EXPECT_EQ(get_compiled_rule_condition("test_rule"), "(evt.type = open and not tolower(proc.name) = test)");
 }

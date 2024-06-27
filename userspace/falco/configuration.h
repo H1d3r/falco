@@ -83,11 +83,32 @@ public:
 		std::string m_root;
 	};
 
+	struct webserver_config {
+		uint32_t m_threadiness = 0;
+		uint32_t m_listen_port = 8765;
+		std::string m_listen_address = "0.0.0.0";
+		std::string m_k8s_healthz_endpoint = "/healthz";
+		bool m_ssl_enabled = false;
+		std::string m_ssl_certificate;
+		bool m_prometheus_metrics_enabled = false;
+	};
+
+	enum class rule_selection_operation {
+		enable,
+		disable
+	};
+
+	struct rule_selection_config {
+		rule_selection_operation m_op;
+		std::string m_tag;
+		std::string m_rule;
+	};
+
 	falco_configuration();
 	virtual ~falco_configuration() = default;
 
-	void init(const std::string& conf_filename, std::vector<std::string>& loaded_conf_files, const std::vector<std::string>& cmdline_options);
-	void init(const std::vector<std::string>& cmdline_options);
+	void init_from_file(const std::string& conf_filename, std::vector<std::string>& loaded_conf_files, const std::vector<std::string>& cmdline_options);
+	void init_from_content(const std::string& config_content, const std::vector<std::string>& cmdline_options, const std::string& filename="default");
 
 	std::string dump();
 
@@ -95,6 +116,8 @@ public:
 
 	// Config list as passed by the user. Filenames.
 	std::list<std::string> m_loaded_configs_filenames;
+	// Map with filenames and their sha256 of the loaded configs files
+	std::unordered_map<std::string, std::string> m_loaded_configs_filenames_sha256sum;
 	// Config list as passed by the user. Folders.
 	std::list<std::string> m_loaded_configs_folders;
 
@@ -102,8 +125,13 @@ public:
 	std::list<std::string> m_rules_filenames;
 	// Actually loaded rules, with folders inspected
 	std::list<std::string> m_loaded_rules_filenames;
+	// Map with filenames and their sha256 of the loaded rules files
+	std::unordered_map<std::string, std::string> m_loaded_rules_filenames_sha256sum;
 	// List of loaded rule folders
 	std::list<std::string> m_loaded_rules_folders;
+	// Rule selection options passed by the user
+	std::vector<rule_selection_config> m_rules_selection;
+
 	bool m_json_output;
 	bool m_json_include_output_property;
 	bool m_json_include_tags_property;
@@ -127,12 +155,7 @@ public:
 	std::string m_grpc_root_certs;
 
 	bool m_webserver_enabled;
-	uint32_t m_webserver_threadiness;
-	uint32_t m_webserver_listen_port;
-	std::string m_webserver_listen_address;
-	std::string m_webserver_k8s_healthz_endpoint;
-	bool m_webserver_ssl_enabled;
-	std::string m_webserver_ssl_certificate;
+	webserver_config m_webserver_config;
 
 	syscall_evt_drop_actions m_syscall_evt_drop_actions;
 	double m_syscall_evt_drop_threshold;
@@ -172,7 +195,7 @@ public:
 	yaml_helper config;
 
 private:
-	void merge_configs_files(const std::string& config_name, std::vector<std::string>& loaded_config_files);
+	void merge_config_files(const std::string& config_name, std::vector<std::string>& loaded_config_files);
 	void load_yaml(const std::string& config_name);
 	void init_logger();
 	void load_engine_config(const std::string& config_name);
@@ -187,6 +210,91 @@ private:
 };
 
 namespace YAML {
+	template<>
+	struct convert<falco_configuration::rule_selection_config> {
+		static Node encode(const falco_configuration::rule_selection_config & rhs) {
+			Node node;
+			Node subnode;
+			if(rhs.m_rule != "")
+			{
+				subnode["rule"] = rhs.m_rule;
+			}
+
+			if(rhs.m_tag != "")
+			{
+				subnode["tag"] = rhs.m_tag;
+			}
+			
+			if(rhs.m_op == falco_configuration::rule_selection_operation::enable)
+			{
+				node["enable"] = subnode;
+			}
+			else if(rhs.m_op == falco_configuration::rule_selection_operation::disable)
+			{
+				node["disable"] = subnode;
+			}
+
+			return node;
+		}
+
+		static bool decode(const Node& node, falco_configuration::rule_selection_config & rhs) {
+			if(!node.IsMap())
+			{
+				return false;
+			}
+
+			if(node["enable"])
+			{
+				rhs.m_op = falco_configuration::rule_selection_operation::enable;
+
+				const Node& enable = node["enable"];
+				if(!enable.IsMap())
+				{
+					return false;
+				}
+
+				if(enable["rule"])
+				{
+					rhs.m_rule = enable["rule"].as<std::string>();
+				}
+				if(enable["tag"])
+				{
+					rhs.m_tag = enable["tag"].as<std::string>();
+				}
+			}
+			else if(node["disable"])
+			{
+				rhs.m_op = falco_configuration::rule_selection_operation::disable;
+
+				const Node& disable = node["disable"];
+				if(!disable.IsMap())
+				{
+					return false;
+				}
+
+				if(disable["rule"])
+				{
+					rhs.m_rule = disable["rule"].as<std::string>();
+				}
+				if(disable["tag"])
+				{
+					rhs.m_tag = disable["tag"].as<std::string>();
+				}
+			}
+			else
+			{
+				return false;
+			}
+
+			if (rhs.m_rule == "" && rhs.m_tag == "")
+			{
+				return false;
+			}
+
+			return true;
+		}
+	};
+
 	template<>
 	struct convert<falco_configuration::plugin_config> {
 

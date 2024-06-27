@@ -198,11 +198,16 @@ std::unique_ptr<load_result> falco_engine::load_rules(const std::string &rules_c
 	cfg.replace_output_container_info = m_replace_container_info;
 
 	// read rules YAML file and collect its definitions
-	if(m_rule_reader->read(cfg, *(m_rule_collector.get())))
+	if(m_rule_reader->read(cfg, *m_rule_collector))
 	{
 		// compile the definitions (resolve macro/list refs, exceptions, ...)
 		m_last_compile_output = m_rule_compiler->new_compile_output();
-		m_rule_compiler->compile(cfg, *(m_rule_collector.get()), *m_last_compile_output.get());
+		m_rule_compiler->compile(cfg, *m_rule_collector, *m_last_compile_output);
+
+		if(!cfg.res->successful())
+		{
+			return std::move(cfg.res);
+		}
 
 		// clear the rules known by the engine and each ruleset
 		m_rules.clear();
@@ -210,7 +215,7 @@ std::unique_ptr<load_result> falco_engine::load_rules(const std::string &rules_c
 		// add rules to each ruleset
 		{
 			src.ruleset = create_ruleset(src.ruleset_factory);
-			src.ruleset->add_compile_output(*(m_last_compile_output.get()),
+			src.ruleset->add_compile_output(*m_last_compile_output,
 							m_min_priority,
 							src.name);
 		}
@@ -242,11 +247,11 @@ std::unique_ptr<load_result> falco_engine::load_rules(const std::string &rules_c
 			}
 			if(info->enabled)
 			{
-				source->ruleset->enable(rule.name, true, m_default_ruleset_id);
+				source->ruleset->enable(rule.name, filter_ruleset::match_type::exact, m_default_ruleset_id);
 			}
 			else
 			{
-				source->ruleset->disable(rule.name, true, m_default_ruleset_id);
+				source->ruleset->disable(rule.name, filter_ruleset::match_type::exact, m_default_ruleset_id);
 			}
 		}
 	}
@@ -272,17 +277,15 @@ void falco_engine::enable_rule(const std::string &substring, bool enabled, const
 
 void falco_engine::enable_rule(const std::string &substring, bool enabled, const uint16_t ruleset_id)
 {
-	bool match_exact = false;
-
 	for(const auto &it : m_sources)
 	{
 		if(enabled)
 		{
-			it.ruleset->enable(substring, match_exact, ruleset_id);
+			it.ruleset->enable(substring, filter_ruleset::match_type::substring, ruleset_id);
 		}
 		else
 		{
-			it.ruleset->disable(substring, match_exact, ruleset_id);
+			it.ruleset->disable(substring, filter_ruleset::match_type::substring, ruleset_id);
 		}
 	}
 }
@@ -296,17 +299,37 @@ void falco_engine::enable_rule_exact(const std::string &rule_name, bool enabled,
 
 void falco_engine::enable_rule_exact(const std::string &rule_name, bool enabled, const uint16_t ruleset_id)
 {
-	bool match_exact = true;
-
 	for(const auto &it : m_sources)
 	{
 		if(enabled)
 		{
-			it.ruleset->enable(rule_name, match_exact, ruleset_id);
+			it.ruleset->enable(rule_name, filter_ruleset::match_type::exact, ruleset_id);
 		}
 		else
 		{
-			it.ruleset->disable(rule_name, match_exact, ruleset_id);
+			it.ruleset->disable(rule_name, filter_ruleset::match_type::exact, ruleset_id);
+		}
+	}
+}
+
+void falco_engine::enable_rule_wildcard(const std::string &rule_name, bool enabled, const std::string &ruleset)
+{
+	uint16_t ruleset_id = find_ruleset_id(ruleset);
+
+	enable_rule_wildcard(rule_name, enabled, ruleset_id);
+}
+
+void falco_engine::enable_rule_wildcard(const std::string &rule_name, bool enabled, const uint16_t ruleset_id)
+{
+	for(const auto &it : m_sources)
+	{
+		if(enabled)
+		{
+			it.ruleset->enable(rule_name, filter_ruleset::match_type::wildcard, ruleset_id);
+		}
+		else
+		{
+			it.ruleset->disable(rule_name, filter_ruleset::match_type::wildcard, ruleset_id);
 		}
 	}
 }
@@ -887,6 +910,11 @@ void falco_engine::print_stats() const
 	m_rule_stats_manager.format(m_rules, out);
 	// todo(jasondellaluce): introduce a logging callback in Falco
 	fprintf(stdout, "%s", out.c_str());
+}
+
+const stats_manager& falco_engine::get_rule_stats_manager() const
+{
+    return m_rule_stats_manager;
 }
 
 bool falco_engine::is_source_valid(const std::string &source) const

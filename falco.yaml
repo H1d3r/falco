@@ -25,50 +25,64 @@
 #
 #     (Falco command-line arguments)
 #     (Falco environment variables)
-# Falco config files
-#     configs_files
+# Falco config files settings
+#     config_files [Stable]
+#     watch_config_files [Stable]
 # Falco rules files
-#     rules_files
+#     rules_files [Stable]
+# Falco rules
+#     rules [Incubating]
 # Falco engine
-#     engine
+#     engine [Stable]
 # Falco plugins
-#     load_plugins
-#     plugins
-# Falco config files
-#     watch_config_files
+#     load_plugins [Stable]
+#     plugins [Stable]
 # Falco outputs settings
-#     time_format_iso_8601
-#     priority
-#     json_output
-#     json_include_output_property
-#     json_include_tags_property
-#     buffered_outputs
-#     rule_matching
-#     outputs_queue
+#     time_format_iso_8601 [Stable]
+#     priority [Stable]
+#     json_output [Stable]
+#     json_include_output_property [Stable]
+#     json_include_tags_property [Stable]
+#     buffered_outputs [Stable]
+#     rule_matching [Incubating]
+#     outputs_queue [Stable]
 # Falco outputs channels
-#     stdout_output
-#     syslog_output
-#     file_output
-#     http_output
-#     program_output
-#     grpc_output
+#     stdout_output [Stable]
+#     syslog_output [Stable]
+#     file_output [Stable]
+#     http_output [Stable]
+#     program_output [Stable]
+#     grpc_output [Stable]
 # Falco exposed services
-#     grpc
-#     webserver
+#     grpc [Stable]
+#     webserver [Stable]
 # Falco logging / alerting / metrics related to software functioning (basic)
-#     log_stderr
-#     log_syslog
-#     log_level
-#     libs_logger
+#     log_stderr [Stable]
+#     log_syslog [Stable]
+#     log_level [Stable]
+#     libs_logger [Stable]
 # Falco logging / alerting / metrics related to software functioning (advanced)
-#     output_timeout
-#     syscall_event_timeouts
-#     syscall_event_drops -> [CHANGE NOTICE] Automatic notifications will be simplified in Falco 0.38! If you depend on the detailed drop counters payload, use 'metrics.output_rule' along with 'metrics.kernel_event_counters_enabled' instead
-#     metrics
+#     output_timeout [Stable]
+#     syscall_event_timeouts [Stable]
+#     syscall_event_drops [Stable] -> [CHANGE NOTICE] Automatic notifications will be simplified in Falco 0.38! If you depend on the detailed drop counters payload, use 'metrics.output_rule' along with 'metrics.kernel_event_counters_enabled' instead
+#     metrics [Stable]
 # Falco performance tuning (advanced)
-#     base_syscalls
+#     base_syscalls [Stable]
 # Falco libs
-#     falco_libs
+#     falco_libs [Incubating]
+
+########################
+# Config maturity tags #
+########################
+
+# As per features adoption and deprecation proposal we support 4 levels of configuration keys maturity:
+# * Sandbox -> Experimental/alpha features, not recommended for production use, can be removed at any time without further notice.
+# * Incubating -> Beta features, long-term support is not guaranteed.
+# * Stable -> General Availability (GA) features for which long-term support is expected.
+# * Deprecated -> Deprecated keys, soon to be removed.
+#
+# For more info, please take a look at the proposal: https://github.com/falcosecurity/falco/blob/master/proposals/20231220-features-adoption-and-deprecation.md.
+
 
 ################################
 # Falco command-line arguments #
@@ -116,11 +130,11 @@
 # disabling the automatic artifacts followed by falcoctl.
 
 
-#######################
-# Falco configs files #
-#######################
+###############################
+# Falco config files settings #
+###############################
 
-# [Stable] `configs_files`
+# [Stable] `config_files`
 #
 # Falco will load additional configs files specified here.
 # Their loading is assumed to be made *after* main config file has been processed,
@@ -129,8 +143,18 @@
 # Also, nested include is not allowed, ie: included config files won't be able to include other config files.
 #
 # Like for 'rules_files', specifying a folder will load all the configs files present in it in a lexicographical order.
-configs_files:
+config_files:
   - /etc/falco/config.d
+
+# [Stable] `watch_config_files`
+#
+# Falco monitors configuration and rules files for changes and automatically
+# reloads itself to apply the updated configuration when any modifications are
+# detected. This feature is particularly useful when you want to make real-time
+# changes to the configuration or rules of Falco without interrupting its
+# operation or losing its state. For more information about Falco's state
+# engine, please refer to the `base_syscalls` section.
+watch_config_files: true
 
 #####################
 # Falco rules files #
@@ -138,7 +162,7 @@ configs_files:
 
 # [Stable] `rules_files`
 
-NOTICE: Before Falco 0.38, this config key was `rules_file` (singular form), which is now deprecated in favor of `rules_files` (plural form).
+# NOTICE: Before Falco 0.38, this config key was `rules_file` (singular form), which is now deprecated in favor of `rules_files` (plural form).
 #
 # Falco rules can be specified using files or directories, which are loaded at
 # startup.
@@ -176,6 +200,39 @@ rules_files:
   - /etc/falco/falco_rules.yaml
   - /etc/falco/falco_rules.local.yaml
   - /etc/falco/rules.d
+
+# [Incubating] `rules`
+#
+# --- [Description]
+#
+# Falco rules can be enabled or disabled by name (with wildcards *) and/or by tag.
+#
+# This configuration is applied after all rules files have been loaded, including
+# their overrides, and will take precedence over the enabled/disabled configuration
+# specified or overridden in the rules files.
+#
+# The ordering matters and selections are evaluated in order. For instance, if you
+# need to only enable a rule you would first disable all of them and then only
+# enable what you need, regardless of the enabled status in the files.
+#
+# --- [Examples]
+#
+# Only enable two rules:
+#
+# rules:
+#   - disable:
+#       rule: "*"
+#   - enable:
+#       rule: Netcat Remote Code Execution in Container
+#   - enable:
+#       rule: Delete or rename shell history
+#
+# Disable all rules with a specific tag:
+#
+# rules:
+#   - disable:
+#       tag: network
+#
 
 ################
 # Falco engine #
@@ -424,21 +481,6 @@ plugins:
     library_path: libjson.so
 
 
-######################
-# Falco config files #
-######################
-
-# [Stable] `watch_config_files`
-#
-# Falco monitors configuration and rule files for changes and automatically
-# reloads itself to apply the updated configuration when any modifications are
-# detected. This feature is particularly useful when you want to make real-time
-# changes to the configuration or rules of Falco without interrupting its
-# operation or losing its state. For more information about Falco's state
-# engine, please refer to the `base_syscalls` section.
-watch_config_files: true
-
-
 ##########################
 # Falco outputs settings #
 ##########################
@@ -492,7 +534,7 @@ json_include_tags_property: true
 # output mechanism. By default, buffering is disabled (false).
 buffered_outputs: false
 
-# [Experimental] `rule_matching`
+# [Incubating] `rule_matching`
 #
 # The `rule_matching` configuration key's values are:
 #  - `first`: Falco stops checking conditions of rules against upcoming event
@@ -716,6 +758,11 @@ webserver:
   # Can be an IPV4 or IPV6 address, defaults to IPV4
   listen_address: 0.0.0.0
   k8s_healthz_endpoint: /healthz
+  # [Incubating] `prometheus_metrics_enabled`
+  #
+  # Enable the metrics endpoint providing Prometheus values
+  # It will only have an effect if metrics.enabled is set to true as well.
+  prometheus_metrics_enabled: false
   ssl_enabled: false
   ssl_certificate: /etc/falco/falco.pem
 
@@ -945,6 +992,8 @@ syscall_event_drops:
 # as Falco does not automatically rotate the file. It can be used in combination
 # with `output_rule`.
 #
+# `rules_counters_enabled`: Emit counts for each rule.
+#
 # `resource_utilization_enabled`: Emit CPU and memory usage metrics. CPU usage
 # is reported as a percentage of one CPU and can be normalized to the total
 # number of CPUs to determine overall usage. Memory metrics are provided in raw
@@ -988,19 +1037,30 @@ syscall_event_drops:
 # beneficial for exploring the data schema and ensuring that fields with empty
 # values are included in the output.
 #
-# todo: prometheus export option
+# `plugins_metrics_enabled`: Falco can now expose your custom plugins' 
+# metrics. Please note that if the respective plugin has no metrics implemented, 
+# there will be no metrics available. In other words, there are no default or 
+# generic plugin metrics at this time. This may be subject to change.
+#
+# If metrics are enabled, the web server can be configured to activate the
+# corresponding Prometheus endpoint using `webserver.prometheus_metrics_enabled`.
+# Prometheus output can be used in combination with the other output options.
+#
 # todo: syscall_counters_enabled option
 metrics:
   enabled: false
   interval: 1h
   # Typically, in production, you only use `output_rule` or `output_file`, but not both. 
   # However, if you have a very unique use case, you can use both together.
+  # Set `webserver.prometheus_metrics_enabled` for Prometheus output.
   output_rule: true
   # output_file: /tmp/falco_stats.jsonl
+  rules_counters_enabled: true
   resource_utilization_enabled: true
   state_counters_enabled: true
   kernel_event_counters_enabled: true
   libbpf_stats_enabled: true
+  plugins_metrics_enabled: true
   convert_memory_to_mb: true
   include_empty_values: false
 
@@ -1127,7 +1187,7 @@ base_syscalls:
 # Falco libs #
 ##############
 
-# [Experimental] `falco_libs` - Potentially subject to more frequent changes
+# [Incubating] `falco_libs`
 #
 # `thread_table_size`
 #

@@ -263,11 +263,11 @@ static void load_rules(sinsp& inspector,
 	rule_loader::collector collector;
 	rule_loader::compiler compiler;
 
-	EXPECT_TRUE(reader.read(*(cfg.get()), collector));
+	EXPECT_TRUE(reader.read(*cfg, collector));
 
 	compile_output = compiler.new_compile_output();
 
-	compiler.compile(*(cfg.get()), collector, *(compile_output.get()));
+	compiler.compile(*cfg, collector, *compile_output);
 }
 
 TEST(engine_loader_alt_loader, load_rules)
@@ -303,16 +303,15 @@ TEST(engine_loader_alt_loader, pass_compile_output_to_ruleset)
 
 	std::shared_ptr<filter_ruleset> ruleset = sources.at(syscall_source_name)->ruleset;
 
-	ruleset->add_compile_output(*(compile_output.get()),
+	ruleset->add_compile_output(*compile_output,
 				    falco_common::PRIORITY_INFORMATIONAL,
 				    syscall_source_name);
 
 	// Enable all rules for a ruleset id. Because the compile
 	// output contained one rule with priority >= INFO, that rule
 	// should be enabled.
-	bool match_exact = true;
 	uint16_t ruleset_id = 0;
-	ruleset->enable("", match_exact, ruleset_id);
+	ruleset->enable("", filter_ruleset::match_type::substring, ruleset_id);
 
 	EXPECT_EQ(ruleset->enabled_count(ruleset_id), 1);
 }
